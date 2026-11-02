@@ -15,6 +15,7 @@ Settings come from environment variables (GitHub repository secrets):
   STRIPE_API_KEY               required, must be a TEST key (starts with sk_test_ or rk_test_)
   GOOGLE_SERVICE_ACCOUNT_JSON  optional, the whole service-account key file as text
   GOOGLE_SHEET_ID              optional, the long ID from the sheet's web address
+  REPORT_TIMEZONE              optional, defaults to America/New_York
 """
 
 import csv
@@ -26,6 +27,7 @@ import time
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import requests
 
@@ -34,14 +36,16 @@ LOOKBACK_DAYS = 30        # re-check this many days back so late refunds get pic
 PAGE_SIZE = 100           # Stripe's maximum per request
 MAX_RETRIES = 4
 TIMEOUT = 20
+TIMEZONE = ZoneInfo(os.environ.get("REPORT_TIMEZONE", "America/New_York"))   # times and daily totals use this zone
 
 # Column order for the "Payments" tab. Card numbers are deliberately NOT copied:
 # the sheet only needs the card brand, so no sensitive card data leaves Stripe.
 PAYMENT_FIELDS = [
-    "charge_id", "created_utc", "amount", "currency", "status",
+    "charge_id", "created", "amount", "currency", "status",
     "refunded_amount", "net_amount", "customer_email", "description", "card_brand",
 ]
 TOTAL_FIELDS = ["date", "payments", "gross", "refunds", "net"]
+MONEY_FIELDS = {"amount", "refunded_amount", "net_amount", "gross", "refunds", "net"}
 
 DATA_DIR = Path("data")
 LOG_DIR = Path("logs")
@@ -119,9 +123,9 @@ def charge_to_row(charge):
         "partially refunded" if refunded else charge.get("status", ""))
     return {
         "charge_id": charge["id"],
-        # The " UTC" ending keeps Google Sheets from re-formatting it as a local date,
-        # so it reads back exactly as written.
-        "created_utc": datetime.fromtimestamp(charge["created"], tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
+        # Shown in TIMEZONE, e.g. "2026-11-01 20:27 EST". The zone letters at the end
+        # also stop Google Sheets from re-formatting it, so it reads back exactly as written.
+        "created": datetime.fromtimestamp(charge["created"], tz=TIMEZONE).strftime("%Y-%m-%d %H:%M %Z"),
         "amount": f"{amount:.2f}",
         "currency": charge.get("currency", "").upper(),
         "status": status,
@@ -161,7 +165,7 @@ def merge_rows(existing, fresh):
         elif any(_same(old.get(f, ""), row[f]) is False for f in PAYMENT_FIELDS):
             updated += 1
         by_id[row["charge_id"]] = row
-    rows = sorted(by_id.values(), key=lambda r: r["created_utc"], reverse=True)
+    rows = sorted(by_id.values(), key=lambda r: r.get("created", ""), reverse=True)
     return rows, added, updated
 
 
@@ -169,9 +173,9 @@ def daily_totals(rows):
     """Roll payments up into one line per day: count, gross, refunds, net."""
     days = defaultdict(lambda: {"payments": 0, "gross": 0.0, "refunds": 0.0})
     for r in rows:
-        if r["status"] == "failed":
+        if r["status"] == "failed" or not r.get("created"):
             continue                          # failed payments brought in no money
-        day = days[r["created_utc"][:10]]
+        day = days[r["created"][:10]]             # the date part, in TIMEZONE
         day["payments"] += 1
         day["gross"] += float(r["amount"])
         day["refunds"] += float(r["refunded_amount"])
@@ -211,7 +215,20 @@ class SheetStore:
         ws.clear()
         # USER_ENTERED makes "51.00" a real number, so the sheet can sum it
         ws.update(values=table, range_name="A1", value_input_option="USER_ENTERED")
+        self._make_readable(ws, table[0])
+
+    def _make_readable(self, ws, header):
+        """Bold, frozen header row; money columns as $1,234.00; columns sized to fit."""
+        from gspread.utils import rowcol_to_a1
         ws.freeze(rows=1)
+        formats = [{"range": "1:1", "format": {"textFormat": {"bold": True}}}]
+        for col, name in enumerate(header, start=1):
+            if name in MONEY_FIELDS:
+                letter = rowcol_to_a1(1, col)[:-1]          # e.g. column 3 -> "C"
+                formats.append({"range": f"{letter}2:{letter}",
+                                "format": {"numberFormat": {"type": "CURRENCY", "pattern": "$#,##0.00"}}})
+        ws.batch_format(formats)                            # one API call for all formatting
+        ws.columns_auto_resize(0, len(header))
 
 
 class CsvStore:
