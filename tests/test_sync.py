@@ -19,7 +19,7 @@ def charge(cid, created, amount, refunded=0, status="succeeded"):
     }
 
 
-OCT_31 = 1793450000   # 2026-10-31 (UTC)
+OCT_31 = 1793450000   # 2026-10-31 08:33 Eastern
 
 
 def test_row_is_flat_and_in_dollars():
@@ -29,7 +29,7 @@ def test_row_is_flat_and_in_dollars():
     assert row["currency"] == "USD"
     assert row["customer_email"] == "test@example.com"
     assert row["card_brand"] == "visa"
-    assert row["created_utc"].startswith("2026-10-31") and row["created_utc"].endswith("UTC")
+    assert row["created"].startswith("2026-10-31") and row["created"][-3:] in ("EST", "EDT")
 
 
 def test_card_number_is_never_copied():
@@ -127,3 +127,18 @@ def test_full_run_writes_csv_files(monkeypatch, tmp_path):
     totals = (tmp_path / "data" / "daily_totals.csv").read_text().splitlines()
     assert len(payments) == 3                # header + 2 payments
     assert totals[1] == "2026-10-31,2,74.00,0.00,74.00"
+
+
+def test_sheet_formatting_targets_money_columns():
+    """Money columns get $ formatting; the header is bold; columns are resized."""
+    calls = {}
+
+    class FakeSheet:
+        def freeze(self, rows): calls["freeze"] = rows
+        def batch_format(self, formats): calls["formats"] = formats
+        def columns_auto_resize(self, start, end): calls["resize"] = (start, end)
+
+    sync.SheetStore._make_readable(None, FakeSheet(), sync.PAYMENT_FIELDS)
+    ranges = [f["range"] for f in calls["formats"]]
+    assert ranges == ["1:1", "C2:C", "F2:F", "G2:G"]   # amount, refunded_amount, net_amount
+    assert calls["freeze"] == 1 and calls["resize"] == (0, len(sync.PAYMENT_FIELDS))
