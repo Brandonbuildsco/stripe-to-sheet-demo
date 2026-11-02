@@ -6,7 +6,7 @@ Every morning this bot pulls the last 30 days of payments from Stripe and keeps 
 
 | Tab | What's in it |
 |---|---|
-| **Payments** | One row per payment: date, amount, status, refunds, net, customer email, description, card brand |
+| **Payments** | One row per payment: date and time, amount, status, refunds, net, customer email, description, card brand |
 | **Daily totals** | One row per day: number of payments, gross, refunds, net |
 
 New payments are added. Payments that changed since the last run (for example, refunded) are updated in place, so the sheet never has duplicates.
@@ -23,7 +23,7 @@ Someone on the team exports payments from Stripe and pastes them into a spreadsh
 - **Test-key guard:** it refuses to run with a live (real-money) Stripe key.
 - **Copies only what's needed:** card numbers never leave Stripe. The sheet only gets the card brand.
 - **Fails loudly:** any error marks the run failed, GitHub emails the owner, and the log is saved for 14 days.
-- **Tested:** 12 offline tests run before every sync (`tests/`).
+- **Tested:** 13 offline tests run before every sync (`tests/`).
 
 ## Run it yourself
 
@@ -45,6 +45,7 @@ python -m pytest -q                    # optional: run the tests
   - `GOOGLE_SHEET_ID`: the long ID in the sheet's web address, between `/d/` and `/edit`.
 - **Share the sheet** with the service account's email as **Editor**, or the bot can't write to it.
 - **Run it now:** Actions tab → *Stripe to Sheet sync* → **Run workflow**. Put a number in the box to add that many sample payments first.
+- **Change the time zone:** times and daily totals are shown in Eastern time. Change `America/New_York` on the `TIMEZONE` line in `sync.py` to any zone, e.g. `America/Chicago`.
 - **Change the schedule:** edit the `cron` line in `.github/workflows/sync.yml`. GitHub's free scheduler can start a run late on busy days; for exact timing, run it on a small server instead.
 - **If a run fails:** open it in the Actions tab. The red step shows what broke, and the full log is under *Artifacts*. The usual causes are an expired key or the sheet not shared with the bot.
 
