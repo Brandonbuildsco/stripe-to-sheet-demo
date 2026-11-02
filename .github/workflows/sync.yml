@@ -1,0 +1,54 @@
+# Copies Stripe test payments into the Google Sheet every day, on GitHub's servers.
+# "Run workflow" also lets you run it by hand, and optionally add sample payments first.
+name: Stripe to Sheet sync
+
+on:
+  schedule:
+    - cron: "47 12 * * *"     # every day at 12:47 UTC (7:47 am Eastern in winter)
+  workflow_dispatch:
+    inputs:
+      seed:
+        description: "Create this many sample TEST payments first (0 = none)"
+        default: "0"
+
+permissions:
+  contents: read               # this job never changes the repo
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      STRIPE_API_KEY: ${{ secrets.STRIPE_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt pytest
+
+      - name: Run tests first (stop if anything is broken)
+        run: python -m pytest -q
+
+      - name: Add sample test payments
+        if: ${{ github.event.inputs.seed != '' && github.event.inputs.seed != '0' }}
+        env:
+          SEED_COUNT: ${{ github.event.inputs.seed }}   # passed as data, never pasted into the command
+        run: python seed_test_data.py "$SEED_COUNT"
+
+      - name: Sync Stripe to Google Sheet
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: python sync.py
+
+      - name: Keep the log for 14 days
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sync-log
+          path: logs/
+          retention-days: 14
